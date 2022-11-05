@@ -3,59 +3,78 @@
 NUM_CORE=$(grep processor /proc/cpuinfo | awk '{field=$NF};END{print field+1}')
 WORKING_DIR="$(cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd)"
 
-# zlib
-ZLIB_VERSION_MAJOR=1
-ZLIB_VERSION_MINOR=2
-ZLIB_VERSION_PATCH=11
-ZLIB="zlib-\
-$ZLIB_VERSION_MAJOR"."\
-$ZLIB_VERSION_MINOR"."\
-$ZLIB_VERSION_PATCH"
-ZLIB_FILENAME=$WORKING_DIR/$ZLIB.tar.gz
-ZLIB_FOLDER=$WORKING_DIR/"zlib"
-ZLIB_URL="https://github.com/madler/zlib/archive/refs/tags/v\
-$ZLIB_VERSION_MAJOR"."\
-$ZLIB_VERSION_MINOR"."\
-$ZLIB_VERSION_PATCH".tar.gz
+# protobuf
+PROTOBUF_VERSION_MAJOR=3
+PROTOBUF_VERSION_MINOR=18
+PROTOBUF_VERSION_PATCH=1
+PROTOBUF="protobuf-\
+$PROTOBUF_VERSION_MAJOR"."\
+$PROTOBUF_VERSION_MINOR"."\
+$PROTOBUF_VERSION_PATCH"
+PROTOBUF_FILENAME=$WORKING_DIR/$PROTOBUF.zip
+PROTOBUF_FOLDER=$WORKING_DIR/$PROTOBUF
+PROTOBUF_URL="https://github.com/protocolbuffers/protobuf/releases/download/v\
+$PROTOBUF_VERSION_MAJOR"."\
+$PROTOBUF_VERSION_MINOR"."\
+$PROTOBUF_VERSION_PATCH"/protoc-"\
+$PROTOBUF_VERSION_MAJOR"."\
+$PROTOBUF_VERSION_MINOR"."\
+$PROTOBUF_VERSION_PATCH"-linux-x86_64.zip
 
-if [ ! -f "$ZLIB_FILENAME" ]; then
-  wget -q $ZLIB_URL -O $ZLIB_FILENAME
+if [ ! -f "$PROTOBUF_FILENAME" ]; then
+  wget -q $PROTOBUF_URL -O $PROTOBUF_FILENAME
 fi
 
-if [ ! -d $ZLIB_FOLDER ]; then
-  mkdir -p $ZLIB_FOLDER
-  tar -xf $ZLIB_FILENAME -C $ZLIB_FOLDER --strip-components 1
+if [ ! -d $PROTOBUF_FOLDER ]; then
+  mkdir -p $PROTOBUF_FOLDER
+  unzip -q $PROTOBUF_FILENAME -d $PROTOBUF_FOLDER
 fi
-cd $ZLIB_FOLDER
-if [ "$1" = "aarch64-linux-gnu" ]; then
-  CC=aarch64-linux-gnu-gcc \
-    LDSHARED=aarch64-linux-gnu-gcc \
-    CPP="aarch64-linux-gnu-gcc -E" \
-    AR=aarch64-linux-gnu-ar \
-    RANLIB=aarch64-linux-gnu-ranlib \
-    ./configure --static -prefix=$ZLIB_FOLDER
+
+# onnxruntime
+ONNXRUNTIME_FOLDER=$WORKING_DIR/onnxruntime
+ONNXRUNTIME_VERSION=v1.12.0
+if [ ! -d $ONNXRUNTIME_FOLDER ]; then
+  git clone git@github.com:microsoft/onnxruntime.git -b $ONNXRUNTIME_VERSION
+fi
+cd $ONNXRUNTIME_FOLDER
+
+git checkout $ONNXRUNTIME_VERSION
+git submodule sync
+git submodule update --init --recursive
+
+# error: def process_ifs(lines: Iterable[str], onnx_ml: bool) -> Iterable[str]:
+# You MUST explicitly modify the Python version you are using for your environment to avoid this error
+#
+# $ python3 --version
+# Python 3.6.9
+cp $WORKING_DIR/onnx_hotfix $ONNXRUNTIME_FOLDER/cmake/external/onnx/CMakeLists.txt
+
+ONNXRUNTIME_BUILD=$ONNXRUNTIME_FOLDER/onnxruntime_build
+mkdir -p $ONNXRUNTIME_BUILD
+cd $ONNXRUNTIME_BUILD
+make clean
+if [ "$1" = "onnxruntime-shared-library" ]; then
+  cmake ../cmake -G"Unix Makefiles" \
+    -DCMAKE_INSTALL_PREFIX=$WORKING_DIR \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DONNX_CUSTOM_PROTOC_EXECUTABLE=$PROTOBUF_FOLDER/bin/protoc \
+    -DCMAKE_TOOLCHAIN_FILE=$WORKING_DIR/tool.cmake \
+    -Donnxruntime_BUILD_SHARED_LIB=ON
+  cmake --build . \
+    --config Release \
+    --target install \
+    -- -j$NUM_CORE
 else
-  CFLAGS="-O3 -D_LARGEFILE64_SOURCE=1 -DHAVE_HIDDEN -fPIC" \
-    ./configure --static -prefix=$ZLIB_FOLDER
+  cp $WORKING_DIR/merge.mri $ONNXRUNTIME_BUILD
+  AR=aarch64-linux-gnu-ar
+  cmake ../cmake -G"Unix Makefiles" \
+    -DCMAKE_INSTALL_PREFIX=$WORKING_DIR \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DONNX_CUSTOM_PROTOC_EXECUTABLE=$PROTOBUF_FOLDER/bin/protoc \
+    -DCMAKE_TOOLCHAIN_FILE=$WORKING_DIR/tool.cmake
+  make -j$NUM_CORE
+  make install
+  $AR -M < ./merge.mri
+  cp $ONNXRUNTIME_BUILD/libonnxruntime.a $WORKING_DIR/lib
 fi
-make clean
-make
-make install
-
-# cnpy
-cd $WORKING_DIR
-git clone https://github.com/rogersce/cnpy
-CNPY_FOLDER=$WORKING_DIR/cnpy
-cd $CNPY_FOLDER
-CNPY_BUILD=$CNPY_FOLDER/cnpy_build
-mkdir -p $CNPY_BUILD
-cd $CNPY_BUILD
-cmake ../ \
-  -DCMAKE_INSTALL_PREFIX=$WORKING_DIR \
-  -DZLIB_LIBRARY=$ZLIB_FOLDER/lib/libz.a \
-  -DZLIB_INCLUDE_DIR=$ZLIB_FOLDER/include \
-  -DCMAKE_POSITION_INDEPENDENT_CODE=ON
-make clean
-make
-make install
 
